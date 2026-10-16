@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EdgeBoard AI</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div>
+    <h1>EdgeBoard AI</h1>
+    <p>Edge capture → image processing → OCR → AI notes</p>
+  </div>
+  <span id="health" class="pill">Checking…</span>
+</header>
+
+<main>
+  <section class="hero card">
+    <div class="hero-image">
+      <img id="latestImage" src="" alt="Latest board capture">
+      <div id="missingImage" class="missing-image" hidden>Capture unavailable</div>
+    </div>
+    <div class="hero-info">
+      <h2 id="latestTitle">Waiting for a frame</h2>
+      <div class="metrics">
+        <div><small>Change</small><strong id="change">—</strong></div>
+        <div><small>Visibility</small><strong id="visibility">—</strong></div>
+        <div><small>Brightness</small><strong id="brightness">—</strong></div>
+        <div><small>Status</small><strong id="status">—</strong></div>
+      </div>
+      <div class="metrics secondary">
+        <div><small>Sharpness</small><strong id="sharpness">—</strong></div>
+        <div><small>Stability</small><strong id="stability">—</strong></div>
+        <div><small>OCR Status</small><strong id="ocrStatus">—</strong></div>
+        <div><small>Confidence</small><strong id="confidence">—</strong></div>
+      </div>
+      <h3>AI Summary</h3>
+      <p id="summary">No processed frame yet.</p>
+      <h3>Extracted Notes</h3>
+      <pre id="notes">—</pre>
+      <h3>Processing Error</h3>
+      <pre id="errorBox">—</pre>
+    </div>
+  </section>
+
+  <section class="card lecture-card">
+    <div class="section-head">
+      <div>
+        <h2>Lecture Notes</h2>
+        <p class="muted">Start a lecture before capturing the board. New captures will be grouped automatically.</p>
+      </div>
+      <span id="lectureState" class="pill neutral">No active lecture</span>
+    </div>
+    <div id="lectureStartPanel" class="lecture-form">
+      <label>Lecture title<input id="lectureTitle" maxlength="120" placeholder="e.g. Digital Electronics — Adders"></label>
+      <label>Subject (optional)<input id="lectureSubject" maxlength="120" placeholder="e.g. Digital Electronics"></label>
+      <button id="startLectureButton" onclick="startLecture()">Start Lecture</button>
+    </div>
+    <div id="activeLecturePanel" hidden>
+      <div class="active-lecture-heading">
+        <div><small>Currently recording</small><h3 id="activeLectureTitle">—</h3><p id="activeLectureMeta" class="muted"></p></div>
+        <button class="danger" onclick="endLecture()">End Lecture</button>
+      </div>
+      <p class="muted">Captures uploaded while this lecture is active will be attached to it. Wait for OCR processing to finish before generating notes.</p>
+    </div>
+    <div class="lecture-history-head"><h3>Previous Lectures</h3><button class="secondary" onclick="loadLectures()">Refresh lectures</button></div>
+    <div id="lectureList" class="lecture-list"><p class="muted">No lectures yet.</p></div>
+    <div id="lectureNotesPanel" class="lecture-notes-panel" hidden>
+      <div class="section-head"><div><h3 id="notesLectureTitle">Digital Notes</h3><p id="notesMeta" class="muted"></p></div><button id="generateNotesButton" onclick="generateNotes()">Generate Digital Notes</button></div>
+      <p id="notesSummary" class="notes-summary"></p>
+      <pre id="lectureNotes">Notes will appear here after generation.</pre>
+      <p id="notesWarning" class="muted"></p>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="section-head">
+      <h2>Captured Frames</h2>
+      <div class="controls">
+        <button onclick="refresh()">Refresh</button>
+        <button onclick="reprocessAll()">Reprocess All</button>
+      </div>
+    </div>
+    <div id="gallery" class="gallery"></div>
+  </section>
+</main>
+
+<script>
+const API_BASE = (window.location.protocol === 'file:' || (window.location.port !== '5000' && !window.location.host.includes(':5000')))
+  ? 'http://127.0.0.1:5000'
+  : '';
+let frames = [];
+let activeLecture = null;
+let selectedLectureId = null;
+function esc(s) { return String(s ?? '').replace(/[&<>\'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
+function setImageSource(filename) {
+  const img = document.getElementById('latestImage');
+  const missing = document.getElementById('missingImage');
+  if (!filename) { img.hidden = true; missing.hidden = false; img.src = ''; return; }
+  img.hidden = false; missing.hidden = true;
+  img.src = `${API_BASE}/captures/${encodeURIComponent(filename)}`;
+}
+function renderLatest(f) {
+  if (!f) {
+    setImageSource(null);
+    document.getElementById('latestTitle').textContent = 'Waiting for a frame';
+    document.getElementById('summary').textContent = 'No processed frame yet.';
+    document.getElementById('notes').textContent = '—';
+    document.getElementById('errorBox').textContent = '—';
+    return;
+  }
+  setImageSource(f.image_available ? f.filename : null);
+  document.getElementById('latestTitle').textContent = `Frame #${f.id} · ${f.filename}`;
+  for (const [id, value] of Object.entries({change:f.change_score, visibility:f.board_visibility, brightness:f.brightness, sharpness:f.sharpness, stability:f.stability_score, ocrStatus:f.ocr_status || 'pending', confidence:f.ocr_confidence ?? '—', status:f.processing_status || 'pending'})) {
+    document.getElementById(id).textContent = value ?? '—';
+  }
+  const errorText = f.processing_error || f.last_error || f.ocr_error || '—';
+  document.getElementById('summary').textContent = f.summary || (errorText !== '—' ? errorText : 'No summary available.');
+  document.getElementById('notes').textContent = f.notes || f.ocr_text || errorText || 'No OCR text detected.';
+  document.getElementById('errorBox').textContent = errorText;
+}
+function renderGallery() {
+  const g = document.getElementById('gallery');
+  g.innerHTML = frames.map(f => `
+    <article class="frame" onclick="selectFrame(${f.id})">
+      <img src="${f.image_available ? `${API_BASE}/captures/${encodeURIComponent(f.filename)}` : ''}" loading="lazy" alt="${esc(f.filename)}">
+      <div><b>#${f.id}</b> ${esc(f.processing_status || 'pending')}</div>
+      <div class="tiny">${esc(f.ocr_status || 'pending')}${f.lecture_id ? ` · Lecture #${f.lecture_id}` : ''}</div>
+      <small>${esc(f.filename || 'Unavailable')}</small>
+    </article>`).join('') || '<p>No frames received yet.</p>';
+}
+async function selectFrame(id) {
+  const r = await fetch(`${API_BASE}/api/frames/${id}`);
+  if (r.ok) renderLatest(await r.json());
+}
+async function refresh() {
+  try {
+    const h = await fetch(`${API_BASE}/health`);
+    const status = await h.json();
+    document.getElementById('health').textContent = status.ok ? 'Server online' : 'Server error';
+    const r = await fetch(`${API_BASE}/api/frames?limit=30`);
+    frames = await r.json(); renderGallery();
+    if (!document.activeElement.closest?.('.frame')) renderLatest(frames[0]);
+  } catch(e) { document.getElementById('health').textContent = 'Offline'; }
+}
+async function loadLectures() {
+  try {
+    const response = await fetch(`${API_BASE}/api/lectures`);
+    const data = await response.json();
+    activeLecture = data.active_lecture;
+    renderActiveLecture();
+    renderLectureList(data.lectures || []);
+  } catch (e) { document.getElementById('lectureList').textContent = 'Could not load lectures.'; }
+}
+function renderActiveLecture() {
+  const hasActive = Boolean(activeLecture);
+  document.getElementById('lectureStartPanel').hidden = hasActive;
+  document.getElementById('activeLecturePanel').hidden = !hasActive;
+  document.getElementById('lectureState').textContent = hasActive ? 'Lecture in progress' : 'No active lecture';
+  document.getElementById('lectureState').className = hasActive ? 'pill' : 'pill neutral';
+  if (hasActive) {
+    document.getElementById('activeLectureTitle').textContent = activeLecture.title;
+    document.getElementById('activeLectureMeta').textContent = `${activeLecture.subject || 'Subject not set'} · Started ${new Date(activeLecture.started_at).toLocaleString()}`;
+  }
+}
+function renderLectureList(lectures) {
+  const container = document.getElementById('lectureList');
+  if (!lectures.length) { container.innerHTML = '<p class="muted">No lectures yet. Start one before capturing the board.</p>'; return; }
+  container.innerHTML = lectures.map(l => `<article class="lecture-row">
+    <div><b>${esc(l.title)}</b><div class="muted tiny">${esc(l.subject || 'No subject')} · ${Number(l.frame_count || 0)} capture(s) · ${Number(l.ready_count || 0)} with text</div><div class="tiny">${esc(l.status)}${l.generation_status === 'complete' ? ' · Notes ready' : ''}</div></div>
+    <button class="secondary" onclick="openLecture(${l.id})">${l.generation_status === 'complete' ? 'View notes' : 'Open'}</button>
+  </article>`).join('');
+}
+async function startLecture() {
+  const title = document.getElementById('lectureTitle').value.trim();
+  const subject = document.getElementById('lectureSubject').value.trim();
+  if (!title) { alert('Please enter a lecture title.'); return; }
+  const button = document.getElementById('startLectureButton'); button.disabled = true;
+  try {
+    const response = await fetch(`${API_BASE}/api/lectures`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({title, subject})});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not start lecture.');
+    document.getElementById('lectureTitle').value = ''; document.getElementById('lectureSubject').value = '';
+    await loadLectures();
+  } catch (e) { alert(e.message); }
+  finally { button.disabled = false; }
+}
+async function endLecture() {
+  if (!activeLecture) return;
+  if (!confirm('End this lecture? New captures will no longer be added to it.')) return;
+  const response = await fetch(`${API_BASE}/api/lectures/${activeLecture.id}/end`, {method:'POST'});
+  const data = await response.json();
+  if (!response.ok) { alert(data.error || 'Could not end lecture.'); return; }
+  selectedLectureId = activeLecture.id;
+  await loadLectures(); await openLecture(selectedLectureId);
+}
+async function openLecture(id, showPanel = true) {
+  const response = await fetch(`${API_BASE}/api/lectures/${id}`);
+  const lecture = await response.json();
+  if (!response.ok) { alert(lecture.error || 'Could not open lecture.'); return; }
+  selectedLectureId = id;
+  const panel = document.getElementById('lectureNotesPanel'); panel.hidden = false;
+  document.getElementById('notesLectureTitle').textContent = lecture.title;
+  document.getElementById('notesMeta').textContent = `${lecture.subject || 'Subject not set'} · ${lecture.frame_count} capture(s) · ${lecture.ready_count} with extracted text · ${lecture.status}`;
+  document.getElementById('notesSummary').textContent = lecture.summary || 'Notes have not been generated yet.';
+  document.getElementById('lectureNotes').textContent = lecture.notes || 'End the lecture, then generate digital notes.';
+  document.getElementById('notesWarning').textContent = lecture.generation_error || '';
+  const generateButton = document.getElementById('generateNotesButton');
+  generateButton.hidden = lecture.status === 'active';
+  generateButton.textContent = lecture.generation_status === 'complete' ? 'Regenerate Digital Notes' : 'Generate Digital Notes';
+  if (showPanel) panel.scrollIntoView({behavior:'smooth', block:'start'});
+}
+async function generateNotes() {
+  if (!selectedLectureId) return;
+  const button = document.getElementById('generateNotesButton');
+  button.disabled = true; button.textContent = 'Generating…';
+  document.getElementById('notesWarning').textContent = 'Preparing the ordered OCR text and generating notes. This may take a little while.';
+  try {
+    const response = await fetch(`${API_BASE}/api/lectures/${selectedLectureId}/generate-notes`, {method:'POST'});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not generate notes.');
+    await openLecture(selectedLectureId, false);
+    document.getElementById('notesWarning').textContent = data.warning || (data.mode === 'ollama' ? 'Generated using the configured local Ollama model.' : 'Shown in offline mode: OCR text is preserved without AI rewriting.');
+    await loadLectures();
+  } catch (e) { document.getElementById('notesWarning').textContent = e.message; }
+  finally {
+    button.disabled = false;
+    if (button.textContent === 'Generating…') button.textContent = 'Generate Digital Notes';
+  }
+}
+async function reprocessAll() {
+  document.getElementById('status').textContent = 'processing…';
+  await fetch(`${API_BASE}/api/reprocess-all`, {method:'POST'});
+  await refresh();
+}
+refresh(); loadLectures(); setInterval(refresh, 2000); setInterval(loadLectures, 5000);
+</script>
+</body>
+</html>
