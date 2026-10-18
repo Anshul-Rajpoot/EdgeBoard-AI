@@ -203,25 +203,3 @@ If Ollama is disabled or cannot be reached, the application preserves the OCR te
 4. **Tesseract OCR**: Extracts text from each variant and selects the result with the highest confidence.
 5. **Structuring**: Identifies formulas, equations, list items, and key headings.
 6. **LLM Synthesis (Optional)**: If Ollama is active, prompts a local model to structure clean lecture/study notes.
-
----
-
-## Documentation
-
-- [System Architecture](docs/architecture.md)
-- [REST API Reference](docs/api.md)
-- [Step-by-Step Setup Guide](docs/setup.md)
-- [Lecture Notes Interview Guide](docs/lecture-notes-interview-guide.md)
-
----
-
-## Contributors
-
-<!-- Organization contributors section -->
-Contributions are welcome! Please feel free to submit issues and pull requests.
-
----
-
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
